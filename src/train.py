@@ -3,20 +3,19 @@ import math
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from sklearn.preprocessing import LabelEncoder
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_log_error
-
+from sklearn.model_selection import train_test_split, KFold
+from sklearn.metrics import mean_squared_error
 from lightgbm import LGBMRegressor
+import warnings
+warnings.filterwarnings('ignore')
 
 path = Path('data')
-train_df = pd.read_csv(path/'train.csv')
-test_df = pd.read_csv(path/'test.csv')
+train_df = pd.read_csv(path / 'train.csv')
+test_df = pd.read_csv(path / 'test.csv')
 
 
-# handle datetime column
+# Handle datetime column
 def handle_datetime(df, col):
-    '''handle datetime column'''
     df[col] = pd.to_datetime(df[col])
     df['year'] = df[col].dt.year.astype('float32')
     df['month'] = df[col].dt.month.astype('float32')
@@ -27,21 +26,19 @@ def handle_datetime(df, col):
     return df
 
 
-# handle datetime columns
+# Handle datetime columns
 train_df = handle_datetime(train_df, 'Policy Start Date')
 test_df = handle_datetime(test_df, 'Policy Start Date')
 
-# handle target column
+# Handle target column
 train_df['Premium Amount'] = np.log1p(train_df['Premium Amount'])
 
-# list categorical and numerical columns
+# List categorical columns
 cat_cols = train_df.select_dtypes(include='object').columns.tolist()
-num_cols = train_df.select_dtypes(include=np.number).drop(
-    columns='Premium Amount').columns.tolist()
 
 
-# Fill Missing
-def fill_missing(df, cat_cols=cat_cols):
+# Fill missing values
+def fill_missing(df, cat_cols):
     for col in df.columns:
         if col in cat_cols:
             df[col] = df[col].fillna(df[col].mode().values[0])
@@ -54,24 +51,52 @@ train_df = fill_missing(train_df, cat_cols)
 test_df = fill_missing(test_df, cat_cols)
 
 
-# Handle categorical columns
-label_encoders = {}
-for col in cat_cols:
-    le = LabelEncoder()
-    train_df[col] = le.fit_transform(train_df[col])
-    label_encoders[col] = le
+# Cross-Fold Target Encoding
+def cross_fold_target_encode(train_df, test_df, cat_cols, target_col, n_splits=5):
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+    global_mean = train_df[target_col].mean()
 
-    if col in test_df.columns:
-        test_df[col] = le.transform(test_df[col])
+    for col in cat_cols:
+        train_df[f'{col}_te'] = 0
+        test_df[f'{col}_te'] = 0
+
+        # Create folds and encode
+        for train_idx, valid_idx in kf.split(train_df):
+            fold_train = train_df.iloc[train_idx]
+            fold_valid = train_df.iloc[valid_idx]
+
+            # Calculate mean excluding current fold
+            fold_mean = fold_train.groupby(col)[target_col].mean()
+
+            # Map mean to validation fold
+            train_df.loc[valid_idx, f'{col}_te'] = fold_valid[col].map(
+                fold_mean)
+
+        # Replace NaNs with global mean
+        train_df[f'{col}_te'].fillna(global_mean, inplace=True)
+
+        # Apply encoding to test data
+        test_mean = train_df.groupby(col)[target_col].mean()
+        test_df[f'{col}_te'] = test_df[col].map(test_mean).fillna(global_mean)
+
+    # Drop original categorical columns
+    train_df.drop(columns=cat_cols, inplace=True)
+    test_df.drop(columns=cat_cols, inplace=True)
+
+    return train_df, test_df
 
 
-# cross validation
+train_df, test_df = cross_fold_target_encode(
+    train_df, test_df, cat_cols, 'Premium Amount')
+
+# Cross-validation
 X = train_df.drop(['Premium Amount'], axis=1)
 y = train_df['Premium Amount']
 X_train, X_valid, y_train, y_valid = train_test_split(
-    X, y, test_size=0.2, random_state=42)
+    X, y, test_size=0.2, random_state=42
+)
 
-
+# Model training
 lgb_params = {
     'n_estimators': 500,
     'learning_rate': 0.05,
@@ -85,17 +110,19 @@ lgb_params = {
     'verbosity': -1,
     'random_state': 42
 }
+
 tik = time.time()
 model = LGBMRegressor(**lgb_params)
 model.fit(X_train, y_train)
 y_pred = model.predict(X_valid)
-loss = np.mean((y_pred - y_valid) ** 2)
+loss = np.sqrt(mean_squared_error(y_valid, y_pred))
 tok = time.time()
-print(f"loss : {loss:.3f} | Time Taken {tok-tik:.2f}s")
 
+print(f"RMSE: {loss:.3f} | Time Taken: {tok-tik:.2f}s")
 
 # Inference
 y_test = model.predict(test_df)
 submission = pd.DataFrame(
-    {'id': test_df['id'], 'Premium Amount': np.exp(y_test)-1})
+    {'id': test_df['id'], 'Premium Amount': np.expm1(y_test)}
+)
 submission.to_csv('submission.csv', index=False)
