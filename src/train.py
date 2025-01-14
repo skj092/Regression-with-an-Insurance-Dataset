@@ -31,6 +31,9 @@ def handle_datetime(df, col):
 train_df = handle_datetime(train_df, 'Policy Start Date')
 test_df = handle_datetime(test_df, 'Policy Start Date')
 
+# handle target column
+train_df['Premium Amount'] = np.log1p(train_df['Premium Amount'])
+
 # list categorical and numerical columns
 cat_cols = train_df.select_dtypes(include='object').columns.tolist()
 num_cols = train_df.select_dtypes(include=np.number).drop(
@@ -86,12 +89,13 @@ tik = time.time()
 model = LGBMRegressor(**lgb_params)
 model.fit(X_train, y_train)
 y_pred = model.predict(X_valid)
-loss = mean_squared_log_error(y_pred, y_valid)
+loss = np.mean((y_pred - y_valid) ** 2)
 tok = time.time()
-print(f"loss : {math.sqrt(loss):.3f} | Time Taken {tok-tik:.2f}s")
+print(f"loss : {loss:.3f} | Time Taken {tok-tik:.2f}s")
 
 
 # Inference
 y_test = model.predict(test_df)
-submission = pd.DataFrame({'id': test_df['id'], 'Premium Amount': y_test})
+submission = pd.DataFrame(
+    {'id': test_df['id'], 'Premium Amount': np.exp(y_test)-1})
 submission.to_csv('submission.csv', index=False)
