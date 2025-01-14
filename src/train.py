@@ -13,9 +13,23 @@ path = Path('data')
 train_df = pd.read_csv(path/'train.csv')
 test_df = pd.read_csv(path/'test.csv')
 
-# For simplicity drop the column 'Policy Start Date'
-train_df.drop(columns=['Policy Start Date'], axis=1, inplace=True)
-test_df.drop(columns=['Policy Start Date'], axis=1, inplace=True)
+
+# handle datetime column
+def handle_datetime(df, col):
+    '''handle datetime column'''
+    df[col] = pd.to_datetime(df[col])
+    df['year'] = df[col].dt.year.astype('float32')
+    df['month'] = df[col].dt.month.astype('float32')
+    df['day'] = df[col].dt.day.astype('float32')
+    df['dow'] = df[col].dt.dayofweek.astype('float32')
+    df['seconds'] = (df[col].astype('int64') // 10**9).astype('float32')
+    df.drop(columns=[col], axis=1, inplace=True)
+    return df
+
+
+# handle datetime columns
+train_df = handle_datetime(train_df, 'Policy Start Date')
+test_df = handle_datetime(test_df, 'Policy Start Date')
 
 # list categorical and numerical columns
 cat_cols = train_df.select_dtypes(include='object').columns.tolist()
